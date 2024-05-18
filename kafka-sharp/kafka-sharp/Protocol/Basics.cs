@@ -550,7 +550,7 @@ namespace Kafka.Protocol
                 }
                 else // compression == CompressionCodec.Lz4
                 {
-                    KafkaLz4.Uncompress(uncompressed, body, offset);
+                    KafkaLz4.Uncompress(uncompressed, body, offset, length);
                 }
 
                 uncompressed.Position = 0;

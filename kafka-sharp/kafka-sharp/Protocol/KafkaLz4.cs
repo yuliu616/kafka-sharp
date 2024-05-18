@@ -2,8 +2,9 @@
 // You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 
 using System.IO;
+using System.Linq;
 using Kafka.Common;
-using LZ4;
+using EasyCompressor;
 
 namespace Kafka.Protocol
 {
@@ -35,13 +36,19 @@ namespace Kafka.Protocol
 
         static KafkaLz4()
         {
-            MaxCompressedSize = LZ4Codec.MaximumOutputLength(BLOCK_SIZE);
+            MaxCompressedSize = BLOCK_SIZE;
         }
 
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="target">compressed data will be written to this stream</param>
+        /// <param name="body">input buffer (always started at offset=0)</param>
+        /// <param name="count">byte(size) to read in input buffer</param>
         public static void Compress(ReusableMemoryStream target, byte[] body, int count)
         {
             target.Write(FrameDescriptor, 0, FrameDescriptor.Length);
-            
+
             // Blocks
             var left = count;
             while (left >= BLOCK_SIZE)
@@ -67,7 +74,17 @@ namespace Kafka.Protocol
             target.SetLength(target.Length + MaxCompressedSize + 4);
             target.Position = position + 4;
 
-            var size = LZ4Codec.Encode(body, offset, count, target.GetBuffer(), position + 4, MaxCompressedSize);
+            byte[] buffer;
+            if (offset == 0 && body.Length == count)
+            {
+                buffer = body;
+            }
+            else
+            {
+                buffer = body.Skip(offset).Take(count).ToArray();
+            }
+            LZ4Compressor.Shared.Compress(buffer); // write to target at offset: position + 4
+            int size = buffer.Length;
 
             if (size >= count)
             {
@@ -88,7 +105,13 @@ namespace Kafka.Protocol
             target.SetLength(target.Position);
         }
 
-        public static void Uncompress(ReusableMemoryStream target, byte[] body, int offset)
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="target">uncompressed will be written to this stream</param>
+        /// <param name="body">input buffer</param>
+        /// <param name="offset">offset to start reading in input buffer</param>
+        public static void Uncompress(ReusableMemoryStream target, byte[] body, int offset, int? inputSize = null)
         {
             // 1. Check magic number
             var magic = LittleEndianReadUInt32(body, offset);
@@ -128,12 +151,18 @@ namespace Kafka.Protocol
             {
                 return 0;
             }
-            
+
             var size = blockHeader & 0x7FFFFFFF;
             if ((blockHeader & 0x80000000) == 0) // compressed data
             {
                 target.SetLength(target.Length + blockSize);
-                var dsize = LZ4Codec.Decode(body, dataIndex + 4, (int) size, target.GetBuffer(), (int) target.Position, blockSize);
+                byte[] buffer = body
+                    .Skip(dataIndex + 4)
+                    .Take((int)size)
+                    .ToArray();
+                byte[] decompressed = LZ4Compressor.Shared.Decompress(buffer);
+                target.Write(decompressed, 0, decompressed.Length);
+                int dsize = decompressed.Length;
                 if (dsize < blockSize)
                 {
                     target.SetLength(target.Length - blockSize + dsize);
